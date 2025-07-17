@@ -6,12 +6,16 @@ import cv2
 import os
 import time
 import GPUtil
+from torchvision.io.image import decode_image
 
 class TestingLogicD2:
     parent_folder_train = '../../../data/Car Detection/Dataset_2/Data/Data/train/'
     parent_folder_test = '../../../data/Car Detection/Dataset_2/Data/Data/test/'
+    parent_folder_combined = '../../../data/Car Detection/Dataset_2/Data/Data/combined/'
+
     num_samples_train = 269
-    num_samples_train = 57
+    num_samples_test = 57
+    num_total_samples = 326
 
 
     def __resize_image_no_padding(self, image, model_type = 'Yolo'):
@@ -60,7 +64,6 @@ class TestingLogicD2:
 
     def __get_box_co_ords(self, tree, output_format = 'tuple'):
         # TODO Assumptions for now
-        # There is always a car
         # The first car has largest area
 
         root = tree.getroot()
@@ -87,7 +90,13 @@ class TestingLogicD2:
         return width*height
 
     def __get_model_pred(self, results, model_type = 'Yolo', metric='confidence'):
-        if model_type == 'Yolo':
+        if model_type == 'ResNet' or model_type == 'RetinaNet':
+            car_preds= []
+            for box,label in zip(results["boxes"],results['labels']):
+                if label == 3:
+                    car_preds.append(np.append(box.detach().numpy(), label))
+
+        elif model_type == 'Yolo':
             car_preds = [pred for pred in results.pred[0].cpu().numpy() if pred[-1] ==2]
             
         elif model_type == "Ultra_Yolo":
@@ -166,7 +175,8 @@ class TestingLogicD2:
     def test_model(self, 
                    model,
                    params,
-                   experiment_tags):
+                   preprocess = None,
+                   debug = False):
 
         model_type = params['model_type']
         resize_images = params['resize_images']
@@ -181,6 +191,8 @@ class TestingLogicD2:
         parent_folder = self.parent_folder_train 
         if dataset_to_use == 'test' :
             parent_folder = self.parent_folder_test 
+        elif dataset_to_use == 'combined':
+            parent_folder = self.parent_folder_combined
         
         start_time = time.time()
 
@@ -190,17 +202,28 @@ class TestingLogicD2:
             else:
                 full_label_path = os.path.join(parent_folder,file)
 
-                image = cv2.imread(full_image_path)
-                if resize_images:
-                    if resize_with_padding:
-                        image = self.__resize_with_padding(image, model_type)
-                    else:
-                        image = self.__resize_image_no_padding(image, model_type)
+                if model_type == 'ResNet' or model_type == 'RetinaNet':
+                    if file == 'car256.xml' or file == 'car257.xml': continue
+                    image = decode_image(full_image_path)
+                    batch = [preprocess(image)]
+                    results = model(batch)[0]
+
+                else:
+                    image = cv2.imread(full_image_path)
+                    if resize_images:
+                        if resize_with_padding:
+                            image = self.__resize_with_padding(image, model_type)
+                        else:
+                            image = self.__resize_image_no_padding(image, model_type)
+
+                    results = model(image)
+
+                if debug: 
+                    print(file)
+                    print(results)
 
                 tree = ET.parse(full_label_path)
                 true_box = self.__get_box_co_ords(tree, output_format='array')
-
-                results = model(image)
 
                 pred_box, confidence = self.__get_model_pred(results,model_type,car_choice_metric)
                 iou = self.__calculate_iou(box1=true_box,box2=pred_box)
@@ -223,3 +246,4 @@ class TestingLogicD2:
 
 
         return self.__get_metrics(iou_results, confidence_results,exec_time)
+    
